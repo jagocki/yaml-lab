@@ -1,0 +1,52 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- none
+
+pool:
+  name: Default
+
+stages:
+  - stage: FirstStage
+    jobs:
+      - job: GetTheJobDone
+        steps:
+        - script: echo Hello, world!
+          displayName: 'Run a one-line script'
+
+        - script: |
+            echo Add other tasks to build, test, and deploy your project.
+            echo See https://aka.ms/yaml
+          displayName: 'Run a multi-line script'
+        - task: CmdLine@2
+          displayName: Extra command line
+          env:
+            envVar: $(valueCounter)
+          inputs:
+            script: |
+              echo variable value is:
+              echo %envVar%
+              echo ##vso[task.complete result=Failed;]Lets Fail Here
+  - stage: SecondStage
+    dependsOn: FirstStage
+    condition: in(dependencies.FirstStage.result, 'Failed', 'SucceededWithIssues', 'Skipped')
+    jobs:
+    - job:
+      steps:
+        - script: echo Runnig second stage!
+    - job: GetTheEnvironmentVariables
+      displayName: A nicer job description for getting the environment variable
+      condition: eq(stageDependencies.FirstStage.GetTheJobDone.result, 'Failed')
+      steps:
+      - task: CmdLine@2
+        displayName: GetAllEnvVariables
+        inputs:
+          script: |
+            set
+        
+        
+
+    

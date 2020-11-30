@@ -1,0 +1,78 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- none
+
+pool:
+  name: Default
+
+parameters:
+  - name: GlobalSettings
+    default: GlobalVariables
+    type: string
+
+variables:
+  - group: ${{ parameters.GlobalSettings }}
+  - name: valueCounter
+    value: $[counter(variables['build.reason'], 0)]
+
+stages:
+  - stage: FirstStage
+    jobs:
+      - job: GetTheJobDone
+        steps:
+        - script: echo Hello, world!
+          displayName: 'Run a one-line script'
+
+        - script: |
+            echo Add other tasks to build, test, and deploy your project.
+            echo See https://aka.ms/yaml
+          displayName: 'Run a multi-line script'
+        - task: CmdLine@2
+          displayName: Extra command line
+          env:
+            envVar: $(ManagedVariable)-$(valueCounter)
+          name: setVar
+          inputs:
+            script: |
+              echo variable value is:
+              echo %envVar%
+              echo expression value is:
+              echo $(valueCounter)
+              echo ##vso[task.setvariable variable=varFromTask;isoutput=true]taskValue
+        - script: |
+              echo varFromTask = $(setVar.varFromTask)
+      - job: GetVariable
+        dependsOn: GetTheJobDone
+        condition: always()
+        variables:
+          varFromTask: $[ dependencies.GetTheJobDone.outputs['setVar.varFromTask'] ]
+        steps:
+          - script: |
+              echo varFromTask = $(varFromTask)
+  - stage: SecondStage
+    dependsOn: FirstStage
+    jobs:
+    - job:
+      variables: 
+       varFromTask:  $[ stageDependencies.FirstStage.GetTheJobDone.outputs['setVar.varFromTask'] ]
+      steps:
+        - script: |
+            echo Runnig second stage!
+            echo $(varFromTask)
+    - job: GetTheEnvironmentVariables
+      displayName: A nicer job description for getting the environment variable
+      condition: eq(stageDependencies.FirstStage.GetTheJobDone.result, 'Failed')
+      steps:
+      - task: CmdLine@2
+        displayName: GetAllEnvVariables
+        inputs:
+          script: |
+            set
+        
+        
+
+    
