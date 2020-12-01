@@ -1,0 +1,159 @@
+trigger:
+- none
+
+pool: default
+
+resources:       
+  pipelines:
+  - pipeline: Build
+    source: BuildAndUnittest
+
+
+parameters:
+  - name: azureSubscription
+    default: adamjag-cee-demo
+    type: string
+  - name: groupName
+    default: spacegame-web-vars
+    type: string
+    
+variables:
+  - group: ${{ parameters.groupName }}
+  - name: buildConfiguration
+    value: 'Debug'
+  - name: appplan
+    value: $(resourcegroup)-app      
+  - name: webappprefix 
+    value: $(resourcegroup)-web
+  - name: major 
+    value: 1  
+  - name: minor 
+    value: 2
+  - name: patch
+    value: $[counter(variables['build.reason'], 0)]
+
+stages:
+- stage: 'ProvisionDev'
+  displayName: 'Create Azure Resorces for Dev'
+  jobs:
+    - deployment : 'Dev'
+      displayName: 'Provision Azure Resources Dev Job'
+      # pool:
+      #   vmImage: 'windows-latest'
+      environment: Dev
+      strategy:
+        runOnce:         
+          deploy:            
+           steps:
+            - task: AzureCLI@2
+              displayName: Azure CLI
+              inputs:
+                azureSubscription: ${{ parameters.azureSubscription }}
+                scriptType: ps
+                powerShellErrorActionPreference: continue
+                scriptLocation: inlineScript
+                inlineScript: |
+                  az account show
+                  az configure --defaults location=$(location)
+                  az group create --name $(resourcegroup)
+                  az appservice plan create --name $(appplan) --resource-group $(resourcegroup) --sku B1
+                  echo az webapp create --name $(webappprefix)-$(Environment.Name) --resource-group $(resourcegroup) --plan $(appplan)
+                  $result = az webapp create --name $(webappprefix)-$(Environment.Name) --resource-group $(resourcegroup) --plan $(appplan)
+                  echo $result
+                  az config set extension.use_dynamic_install=yes_without_prompt
+                  az extension add --name application-insights
+                  az monitor app-insights component create --app $(webappprefix)-$(Environment.Name)-appins -g $(resourcegroup) --kind web --application-type web --retention-time 120
+                  $appInsightsKey = az resource show -g $(resourcegroup) -n $(webappprefix)-$(Environment.Name)-appins --resource-type "Microsoft.Insights/components" --query "properties.InstrumentationKey" -o tsv
+                  az webapp config appsettings set -n $(webappprefix)-$(Environment.Name) -g $(resourcegroup) --settings "APPINSIGHTS_INSTRUMENTATIONKEY=$appInsightsKey"
+                  az webapp config appsettings set -n $(webappprefix)-$(Environment.Name) -g $(resourcegroup) --settings "ApplicationInsightsAgent_EXTENSION_VERSION=~2"
+- stage: 'DevDeploy'
+  displayName: 'Deploy app to dev environment'
+  dependsOn: 
+    - ProvisionDev
+  jobs:    
+    - deployment: 'DevDeploy'
+      displayName: 'Deploy app to dev environment'
+      # pool:
+      #   vmImage: 'windows-latest'
+      environment: Dev
+      strategy:
+        runOnce:         
+          deploy:            
+           steps:
+            - task: CmdLine@2
+              displayName: 'Delete old content'
+              inputs:
+                script: |
+                  del $(Pipeline.Workspace)\Build\zip\*.zip
+            - download: Build
+              artifact: zip
+              patterns: '*/*Web.zip'
+            - task: AzureWebApp@1
+              displayName: 'Azure App Service Deploy: website'
+              inputs:
+                appType: webApp
+                azureSubscription: ${{ parameters.azureSubscription }}
+                appName: $(webappprefix)-$(Environment.Name)
+                package: '$(Pipeline.Workspace)/Build/zip/*.zip'
+   
+            
+
+- stage: 'ProvisionStage'
+  displayName: 'Create Azure Resorces for Stage'
+  dependsOn:
+    - DevDeploy
+  jobs:
+    - deployment : 'Stage'
+      displayName: 'Provision Azure Resources Stage Job'
+      environment: Stage
+      strategy:
+        runOnce:
+          deploy:            
+            steps:
+            - task: AzureCLI@2
+              displayName: Azure CLI
+              inputs:
+                azureSubscription: ${{ parameters.azureSubscription }}
+                scriptType: ps
+                scriptLocation: inlineScript
+                inlineScript: |
+                  az account show
+                  az configure --defaults location=$(location)
+                  az group create --name $(resourcegroup)
+                  az appservice plan create --name $(appplan) --resource-group $(resourcegroup) --sku B1
+                  echo az webapp create --name $(webappprefix)-$(Environment.Name) --resource-group $(resourcegroup) --plan $(appplan)
+                  $result = az webapp create --name $(webappprefix)-$(Environment.Name) --resource-group $(resourcegroup) --plan $(appplan)
+                  echo $result
+                  az config set extension.use_dynamic_install=yes_without_prompt
+                  az extension add --name application-insights
+                  az monitor app-insights component create --app $(webappprefix)-$(Environment.Name)-appins -g $(resourcegroup) --kind web --application-type web --retention-time 120
+                  $appInsightsKey = az resource show -g $(resourcegroup) -n $(webappprefix)-$(Environment.Name)-appins --resource-type "Microsoft.Insights/components" --query "properties.InstrumentationKey" -o tsv
+                  az webapp config appsettings set -n $(webappprefix)-$(Environment.Name) -g $(resourcegroup) --settings "APPINSIGHTS_INSTRUMENTATIONKEY=$appInsightsKey"
+                  az webapp config appsettings set -n $(webappprefix)-$(Environment.Name) -g $(resourcegroup) --settings "ApplicationInsightsAgent_EXTENSION_VERSION=~2"
+- stage: 'StageDeploy'
+  displayName: 'Deploy app to stage environment'
+  dependsOn: 
+    - ProvisionStage
+  jobs:    
+    - deployment: 'StageDeploy'
+      displayName: 'Deploy app to stage environment'
+      environment: Stage
+      strategy:
+        runOnce:         
+          deploy:            
+           steps:
+           - task: CmdLine@2
+             displayName: 'Delete old content'
+             inputs:
+              script: |
+                  del $(Pipeline.Workspace)\Build\zip\*.zip
+           - download: Build
+             artifact: zip
+             patterns: '*/*Web.zip'
+           - task: AzureWebApp@1
+             displayName: 'Azure App Service Deploy: website'
+             inputs:
+              appType: webApp
+              azureSubscription: ${{ parameters.azureSubscription }}
+              appName: $(webappprefix)-$(Environment.Name)
+              package: '$(Pipeline.Workspace)/Build/zip/*.zip'

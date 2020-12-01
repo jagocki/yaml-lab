@@ -1,0 +1,221 @@
+trigger:
+- master
+
+parameters:
+  - name: azureSubscription
+    default: azr-subscription
+    type: string
+  - name: groupName
+    default: azure-env
+    type: string
+  - name: configStoreName
+    default: azure-env
+    type: string
+  - name: featureGroupName
+    default: dev-features
+    type: string
+    
+variables:
+  - group: ${{ parameters.groupName }}
+  - name: buildConfiguration
+    value: 'Debug'
+  - name: appplan
+    value: $(resourcegroup)-app      
+  - name: webappprefix 
+    value: adamjag-tailspin-space-game-web
+  - name: major 
+    value: 1  
+  - name: minor 
+    value: 2
+  - name: patch
+    value: $[counter(variables['build.reason'], 0)]
+
+#name: $(SourceBranchName)_$(major)_$(minor)_$(patch)_$(SourceVersion)
+
+
+stages:
+- stage: Init
+  jobs:
+  - job: GitVersion
+    displayName: DisplayVariables
+    pool:
+      vmImage: 'ubuntu-18.04' 
+    steps: 
+    - task: gitversion/setup@0
+      displayName: Install GitVersion
+      inputs:
+        versionSpec: '5.1.3'
+    - task: gitversion/execute@0
+      displayName: Use GitVersion
+    - script: |
+          echo FullSemVer: $(fullSemVer)
+          echo '##vso[build.updatebuildnumber]$(fullSemVer)'
+
+- stage: SyncVariables
+  jobs:
+  - template: sync-variables.yml
+    parameters:
+      variableGroupsLibrary: ${{ parameters.groupName }}
+      label: 'appsettings'
+      azureSubscription: ${{ parameters.azureSubscription }}
+      configName: ${{ parameters.configStoreName }}   
+      featureSetName: ${{ parameters.featureGroupName }}   
+- stage: 'Diagnostic'
+  displayName: 'Diagnostic'
+  variables: 
+  - group: ${{ parameters.groupName }}
+  - name: myLocation
+    value: $[variables['location']]
+  jobs:
+  - job: DisplayVariables
+    displayName: DisplayVariables
+    pool:
+      vmImage: 'ubuntu-18.04' 
+    steps: 
+    - task: CmdLine@2
+      inputs:    
+        script: |
+          echo location=$(myLocation)
+          echo resourcegroup=$(resourcegroup)
+
+- stage: 'Build'
+  displayName: 'Build the web application'
+  jobs: 
+  - job: 'Build'
+    displayName: 'Build job'
+    pool:
+      vmImage: 'ubuntu-18.04'
+      demands:
+      - npm
+
+    variables:
+      wwwrootDir: 'Tailspin.SpaceGame.Web/wwwroot'
+      dotnetSdkVersion: '3.1.300'
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Use .NET Core SDK $(dotnetSdkVersion)'
+      inputs:
+        version: '$(dotnetSdkVersion)'
+
+    - task: Npm@1
+      displayName: 'Run npm install'
+      inputs:
+        verbose: false
+
+    - script: './node_modules/.bin/node-sass $(wwwrootDir) --output $(wwwrootDir)'
+      displayName: 'Compile Sass assets'
+
+    - task: gulp@1
+      displayName: 'Run gulp tasks'
+
+    - script: 'echo "$(Build.DefinitionName), $(Build.BuildId), $(Build.BuildNumber)" > buildinfo.txt'
+      displayName: 'Write build info'
+      workingDirectory: $(wwwrootDir)
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Restore project dependencies'
+      inputs:
+        command: 'restore'
+        projects: '**/*.csproj'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Build the project - $(buildConfiguration)'
+      inputs:
+        command: 'build'
+        arguments: '--no-restore --configuration $(buildConfiguration)'
+        projects: '**/*.csproj'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Publish the project - $(buildConfiguration)'
+      inputs:
+        command: 'publish'
+        projects: '**/*.csproj'
+        publishWebProjects: false
+        arguments: '--no-build --configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/$(buildConfiguration)'
+        zipAfterPublish: true
+
+    - publish: '$(Build.ArtifactStagingDirectory)'
+      artifact: drop
+
+- stage: 'ProvisionDev'
+  displayName: 'Create Azure Resorces for Dev'
+  dependsOn: Build
+  jobs:
+    - deployment : 'Dev'
+      displayName: 'Provision Azure Resources Dev Job'
+      pool:
+        vmImage: 'windows-latest'
+      environment: Dev
+      strategy:
+        runOnce:         
+          deploy:            
+           steps:
+            - task: AzureCLI@2
+              displayName: Azure CLI
+              inputs:
+                azureSubscription: ${{ parameters.azureSubscription }}
+                scriptType: ps
+                powerShellErrorActionPreference: continue
+                scriptLocation: inlineScript
+                inlineScript: |
+                  az account show
+                  az configure --defaults location=$(location)
+                  az group create --name $(resourcegroup)
+                  az appservice plan create --name $(appplan) --resource-group $(resourcegroup) --sku B1
+                  echo az webapp create --name $(webappprefix)-$(Environment.Name) --resource-group $(resourcegroup) --plan $(appplan)
+                  $result = az webapp create --name $(webappprefix)-$(Environment.Name) --resource-group $(resourcegroup) --plan $(appplan)
+                  echo $result
+- stage: 'DevDeploy'
+  displayName: 'Deploy app to dev environment'
+  dependsOn: 
+    - Build
+    - ProvisionDev
+  jobs:    
+    - deployment: 'DevDeploy'
+      displayName: 'Deploy app to dev environment'
+      pool:
+        vmImage: 'windows-latest'
+      environment: Dev
+      strategy:
+        runOnce:         
+          deploy:            
+           steps:
+            - download: current
+              artifact: drop
+            - task: AzureWebApp@1
+              displayName: 'Azure App Service Deploy: website'
+              inputs:
+                appType: webApp
+                azureSubscription: ${{ parameters.azureSubscription }}
+                appName: $(webappprefix)-$(Environment.Name)
+                package: '$(Pipeline.Workspace)/drop/$(buildConfiguration)/*.zip'
+
+      
+
+- stage: 'ProvisionStage'
+  displayName: 'Create Azure Resorces for Stage'
+  dependsOn:
+    - Build
+    - DevDeploy
+  jobs:
+    - deployment : 'Stage'
+      displayName: 'Provision Azure Resources Stage Job'
+      pool:
+        vmImage: 'windows-latest'                  
+      environment: Stage
+      strategy:
+        runOnce:
+          deploy:            
+            steps:
+            - task: AzureCLI@2
+              displayName: Azure CLI
+              inputs:
+                azureSubscription: ${{ parameters.azureSubscription }}
+                scriptType: ps
+                scriptLocation: inlineScript
+                inlineScript: |
+                  az account show
+                  az configure --defaults location=$(location)
+                  az group create --name $(resourcegroup)
+                  az appservice plan create --name $(appplan) --resource-group $(resourcegroup) --sku B1
+                  az webapp create --name $(webappprefix)-$(Environment.Name) --resource-group $(resourcegroup) --plan $(appplan)

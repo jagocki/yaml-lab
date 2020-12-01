@@ -1,0 +1,22 @@
+#this is sample for windows box, this other OS versions are located here
+#https://docs.microsoft.com/en-us/azure/devops/cli/azure-devops-cli-in-yaml?view=azure-devops
+
+parameters: 
+- name: cliSteps 
+  type: stepList
+  default: []
+- name: pat
+  type: string
+  default: ''
+
+steps:
+- script: |
+    az extension update --name azure-devops
+  displayName: 'upgrade azure cli'
+- script: echo ${{ parameters.pat }} | az devops login
+  env:
+    AZURE_DEVOPS_CLI_PAT: $(System.AccessToken)
+  displayName: 'Login Azure DevOps Extension'
+- script: az devops configure --defaults organization=$(System.CollectionUri) project="$(System.TeamProject)" --use-git-aliases true
+  displayName: 'Set default Azure DevOps organization and project'
+- ${{ parameters.cliSteps }}

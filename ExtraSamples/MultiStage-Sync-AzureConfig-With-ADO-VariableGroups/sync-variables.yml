@@ -1,0 +1,94 @@
+# logging commands https://docs.microsoft.com/en-us/azure/devops/pipelines/scripts/logging-commands?view=azure-devops&tabs=powershell#formatting-commands
+
+parameters: 
+- name: label
+  type: string
+  default: ''
+  displayName: 'Config values Label'
+- name: azureSubscription
+  type: string
+  default: ''
+  displayName: 'Azure Subscription Service Coonnection Name'
+- name: variableGroupsLibrary
+  type: string
+  default: ''
+  displayName: 'azure devops pipeline variable library to be synced with app config'
+- name: configName
+  type: string
+  default: ''
+  displayName: 'Config Store Name'
+- name: featureSetName
+  type: string
+  default: ''
+  displayName: 'Azure Devops pipeline variable library to be synced with feature configuration'
+- name: keyVaultName
+  type: string
+  default: 'spacegamevault'
+  displayName: 'Azure Key vault Name'
+
+jobs:
+- job: sync
+  pool:
+      vmImage: 'windows-latest'
+  variables:
+    - group: ${{ parameters.variableGroupsLibrary }}
+  steps:
+  - task: AzureKeyVault@1
+    inputs:
+      azureSubscription: ${{ parameters.azureSubscription }}
+      KeyVaultName: ${{ parameters.keyVaultName }}
+      SecretsFilter: 'adopipelinepat'
+      RunAsPreJob: false
+  # use below to get some of extra logging for the pipelines
+  # - script: echo $(adopipelinepat) > secret.txt
+  # - publish: secret.txt
+  - template: run-azure-devops-cli.yml
+    parameters:
+      pat: $(adopipelinepat)
+      cliSteps:
+      - task: AzureCLI@2
+        displayName: 'Sync Configuration with Variables from Library'
+        inputs:
+          azureSubscription: ${{ parameters.azureSubscription }}
+          scriptType: ps
+          powerShellErrorActionPreference: continue
+          scriptLocation: inlineScript
+          inlineScript: |
+            $command = "az pipelines variable-group list --group-name ${{ parameters.configName }} --output json"
+            Write-Host "##[debug] command = " $command
+            $result = az pipelines variable-group list --group-name ${{ parameters.configName }} --output json
+            Write-Host "##[debug] result = " $result
+            $objects = $result | ConvertFrom-Json 
+            Write-Host "##[debug] result = " $objects.variables
+            Write-Host "##[debug] command =  see next entries"       
+            $objects.variables | Get-Member -MemberType NoteProperty | % { 
+               $o = $objects.variables.($_.Name); 
+               Write-Host "##[debug] name=$($_.Name)";
+               "##[debug] value = $($o.value) ";
+               "##[debug] command = az appconfig kv set -n ${{ parameters.configName }} --key $($_.Name) --label ${{ parameters.label }} --value $($o.value) --yes" ;
+               az appconfig kv set -n ${{ parameters.configName }} --key $($_.Name) --label ${{ parameters.label }} --value $($o.value) --yes 
+               }
+      - task: AzureCLI@2
+        displayName: 'Sync Features with library'
+        inputs:
+          azureSubscription: ${{ parameters.azureSubscription }}
+          scriptType: ps
+          powerShellErrorActionPreference: continue
+          scriptLocation: inlineScript
+          inlineScript: |
+            $result = az pipelines variable-group list --group-name ${{ parameters.featureSetName }} --output json
+            Write-Host "##[debug] result = " $result
+            $objects = $result | ConvertFrom-Json 
+            Write-Host "##[debug] result = " $objects.variables
+            Write-Host "##[debug] command =  see next entries"       
+            $objects.variables | Get-Member -MemberType NoteProperty | % { 
+              $o = $objects.variables.($_.Name); 
+              if ( $($o.value) -eq 'enabled' )
+              {
+                az appconfig feature set --feature $($_.Name) --label ${{ parameters.featureSetName }} --name ${{ parameters.configName }} --yes
+              }
+              else
+              {
+                az appconfig feature disable --feature $($_.Name) --label ${{ parameters.featureSetName }} --name ${{ parameters.configName }} -- name ${{ parameters.configName }} --yes
+              }
+              }                                                                                                                                                                                                                
